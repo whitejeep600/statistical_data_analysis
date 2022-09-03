@@ -1,0 +1,441 @@
+---
+title: "First small project in R, SDA 2022"
+author: "Antoni Maciąg"
+date: '2022-04-24'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## 1, 2 - Data summary with plots
+
+```{r, echo=FALSE}
+
+people <- read.table('people.tab.csv', header = T, sep = "\t")
+colnames(people) = c('age', 'weight', 'height', 'gender', 'married',
+'children', 'building type', 'expenses', 'savings')
+
+building_types = c('family house', 'loft', 'luxury', 'plattenbau', 'tenement')
+
+people$`building type` <- replace(people$`building type`,
+                                  people$`building type` == 'wielka_plyta',
+                                  'plattenbau')
+people$`building type` <- replace(people$`building type`,
+                                  people$`building type` == 'apartament',
+                                  'luxury')
+people$`building type` <- replace(people$`building type`,
+                                  people$`building type` == 'jednorodzinny',
+                                  'family house')
+people$`building type` <- replace(people$`building type`,
+                                  people$`building type` == 'kamienica',
+                                  'tenement')
+people$gender <- replace(people$gender,
+                        people$gender == 'K',
+                        'F')
+summary(people)
+
+```
+
+There are 500 observations. Qualitative variables are, as follows: marital status , gender, building type. The other variables are quantitative. Building types present in the date are: plattenbau, luxury apartment, single-family house, tenement, loft. Let us take a look at the Spearman correlation matrix of quantitative variables and visualize it with a heatmap:
+
+```{r, echo=FALSE}
+quant_explanatory = c('age', 'weight', 'height', 'children', 'expenses')
+correlation_matrix <- cor(people[, quant_explanatory], method = c("spearman"))
+correlation_matrix
+correlation_scaled <- sqrt(abs(correlation_matrix)) * sign(correlation_matrix)
+```
+```{r, fig.width=7, fig.height=4, echo=FALSE}
+# to be fair I'm taking some liberties here to make the plot more readable
+heatmap(correlation_scaled, col = hcl.colors(40, "Temps", rev = TRUE)[15:36])
+```
+
+We can now visualize the most significant correlations with scatterplots.
+
+```{r, fig.width=7, fig.height=4, echo=FALSE}
+library(ggplot2)
+ggplot(people) + geom_point(aes(x=height, y=weight))
+
+```
+
+```{r, fig.width=7, fig.height=4, echo=FALSE}
+library(ggplot2)
+ggplot(people) + geom_point(aes(x=age, y=expenses))
+
+```
+
+```{r, fig.width=7, fig.height=4, echo=FALSE}
+library(ggplot2)
+ggplot(people) + geom_point(aes(x=children, y=expenses))
+
+```
+
+
+In addition, we can show all pair correlations in less detail:
+
+
+```{r, fig.width=10, fig.height=8, echo=FALSE}
+pairs(~age + weight + height + children + expenses + savings, data=people)
+```
+
+Now we can investigate the relationships between qualitative variables. For the relationship between marital status and gender, we can conduct a Fisher test:
+
+```{r}
+
+ftest <- fisher.test(people$gender, people$married)
+
+```
+The test results in a p-value of `r ftest$p.value`, giving us no reason to assume these variables are correlated.
+
+At this point it might be fair to point out that some data is lacking - we do not know the gender of `r sum(is.na(people$gender)) ` people.
+
+Now in order to investigate the relationship between marital status and type of inhabited building, we may create three pie charts, first the pie chart of building types for married people:
+
+```{r, echo=FALSE}
+
+to_percent <- function(x) {
+  x <- round(100*x, digits=0)
+  x <- toString(x)
+  return(paste(x, "%"))
+}
+
+
+draw_pie <- function(types){
+  types_quantities = apply(sapply(building_types, '==', types), 2, sum)
+  types_quantities = unname(types_quantities / sum(types_quantities))
+  sapply(types_quantities, to_percent)
+  labels = cbind(building_types, sapply(types_quantities, to_percent))
+  labels = paste(labels[,1], labels[,2])
+  pie(types_quantities, labels)
+}
+```
+```{r, fig.width=7, fig.height=4, echo=FALSE}
+draw_pie(people[people$married,]$`building type`)
+```
+
+the same chart for unmarried people looks like this:
+
+```{r, fig.width=7, fig.height=4, echo=FALSE}
+draw_pie(people[!people$married,]$`building type`)
+```
+
+and the aggregate pie chart:
+
+
+```{r, fig.width=7, fig.height=4, echo=FALSE}
+draw_pie(people$`building type`)
+```
+
+In the same way, we may investigate the relationship between gender and type of building. The chart for women:
+
+```{r, fig.width=7, fig.height=4, echo=FALSE}
+
+draw_pie(people[na.omit(people$gender == 'F'),]$`building type`)
+```
+
+for men:
+
+```{r, fig.width=7, fig.height=4, echo=FALSE}
+draw_pie(people[na.omit(people$gender == 'M'),]$`building type`)
+```
+
+And the aggregate is the same.
+
+Expenses in relationship to gender:
+
+```{r, echo=FALSE}
+boxplot(expenses ~ gender, data = people)
+```
+
+## 3 - testing hypotheses for mean and median
+
+To test whether the mean height is equal to 170 cm, we would probably like to assume that the height distribution in the population is normal. We may test that with a q2q plot:
+
+```{r, echo=FALSE}
+qqnorm(people$height)
+```
+
+The plot looks mostly linear with some disturbance only in the tails. No observations seem to be outliers. Assuming normal distribution seems to be reasonable. We will now take advantage of the fact that, assuming $H_0$, the test statistic
+$$
+M = \frac{\bar{X}-\mu_0}{S}\cdot\sqrt{n-1}
+$$
+where $\bar{X}$ - mean of the sample, $\mu_0$ - hypothesized mean, $S^2$ - sample variance, $n$-sample size, follows Student's t-distribution with $n-1$ degrees of freedom. Therefore, our $p$-value is equal to $T(M)$, where $T$ is the cumulative distribution function of this distribution.
+
+```{r}
+m0=170  # height in the data is also provided in centimeters
+s2=var(people$height)
+n=length(people$height)
+X=mean(people$height)
+M=(X-m0)/sqrt(s2) * sqrt(n-1)
+pval = pt(M, n-1)
+```
+
+The obtained pvalue of `r pval` would give us fairly good grounds to reject $H_0$.
+
+For the hypothesis about the median being equal to 165 vs. the alternative hypothesis - that it is less, we will conduct the Wilcoxon signed rank test. The test required that the distribution of the tested random variable be symmetrical. As mentioned above, we have good grounds to believe that it is normal, and thus indeed symmetrical.
+
+```{r}
+me0=165
+wtest <- wilcox.test(people$height, alternative="less", mu=me0)
+wtest$p.value
+```
+This result gives us absolutely no grounds to reject $H_0$ in favor of $H_1$.
+
+## 4 - confidence intervals for age
+
+To analyze the mean, standard deviation and quantiles of age, we should first take a look at its distribution. It is noteworthy that it seems to be normal:
+
+```{r, echo=FALSE}
+qqnorm(people$age)
+```
+
+Not being detached from reality, we have to note that age has no reason to be distributed even remotely normally, which suggests that the data was generated randomly rather than sampled from any population. That said, mathematically it still kind of makes sense to analyze it as if it were normal. To estimate the mean, we may take advantage of the fact that the random variable
+$$
+\frac{\bar{X}-\mu}{S_n}\cdot \sqrt{n-1}
+$$
+where $S_n^2$ - sample variance, follows Student's t-distribution (as long as $\bar{X}$ is normal). Hence, the confidence interval should look like:
+$$
+t(0.005, n-1) \leq \frac{\bar{X}-\mu}{S_n}\cdot \sqrt{n-1} \leq t(0.995, n-1)
+$$
+where $t(x, k)$ is the quantile of degree $x$ of Student's t-distribution with $k$ degrees of freedom.
+
+```{r}
+n = length(people$age)
+Sn = sqrt(var(people$age))
+lower_bound = -1* (qt(0.995, n-1) * Sn / sqrt(n-1) - mean(people$age))
+upper_bound = -1* (qt(0.005, n-1) * Sn / sqrt(n-1) - mean(people$age))
+```
+
+Eventually giving us a confidence interval of (`r round(lower_bound, 2)`, `r round(upper_bound, 2)`).
+To analyze the standard deviation of the sample, we will make use of the fact that the random variable
+
+$$
+\frac{nS_n^2}{\sigma^2}
+$$
+follows the $\chi^2$ distribution with $n-1$ degrees of freedom. Therefore
+$$
+ch(0.005, n-1) \leq \frac{nS_n^2}{\sigma^2} \leq ch(0.995, n-1)
+$$
+
+where $ch(x, k)$ is the quantile of degree $x$ of the chi-squared distribution with $k$ degrees of freedom.
+
+```{r}
+lower_bound = sqrt(n * Sn^2 / qchisq(0.995, n-1))
+upper_bound = sqrt(n * Sn^2 / qchisq(0.05, n-1))
+```
+
+So this time we get an interval of (`r round(lower_bound, 2)`, `r round(upper_bound, 2)`).
+
+```{r, echo=FALSE}
+library(MKmisc)
+# installation described at https://github.com/stamats/MKmisc
+# used here per instructions at:
+# https://www.r-bloggers.com/2016/10/better-confidence-intervals-for-quantiles/
+```
+
+Now we may investigate the confidence intervals for quantiles of degree 0.25, 0.5, 0.75:
+
+```{r, echo=FALSE}
+conf_int025 = quantileCI(people$age, prob = 0.25, conf.level = 0.99, method = "exact", minLength = TRUE)$conf.int
+conf_int05 = quantileCI(people$age, prob = 0.5, conf.level = 0.99, method = "exact", minLength = TRUE)$conf.int
+conf_int075 = quantileCI(people$age, prob = 0.75, conf.level = 0.99, method = "exact", minLength = TRUE)$conf.int
+
+confidences = rbind(conf_int025[1,], conf_int05[1,], conf_int075[1,])
+rownames(confidences) = c("0.25", "0.5", "0.75")
+colnames(confidences) = c("lower boundary", "upper boundary")
+
+confidences
+
+```
+
+## 5 - testing some more hypotheses
+
+Now let us test the hypothesis that the average weight is the same for married and unmarriedpeople. The alternative hypothesis is that married people weigh less. Again, we check if the data is distributed normally:
+
+```{r, echo=FALSE}
+married_people = people[people$married,]
+unmarried_people = people[!people$married,]
+```
+
+
+```{r}
+qqnorm(unmarried_people$weight)
+qqnorm(married_people$weight)
+```
+
+We may note that the variances of the groups cannot be assumed to be equal. The variance of weights for unmarried people is equal to `r round(var(unmarried_people$weight), 2)`, and for married people it is `r round(var(married_people$weight), 2)`. For this reason, we should use Welch's t-test to test our hypothesis.
+
+```{r}
+welch <- t.test(married_people$weight, unmarried_people$weight, alternative="less")
+```
+
+With a p-value of `r round(welch$p.value, 2)`, we may conclude that the null hypothesis should not be rejected.
+
+Now we can use Pearson's chi-squared test to assess the independence of height and expenses. The test does not require any assumptions about data distribution. The null hypothesis is that the variables are independent, with a two-tailed alternative.
+
+```{r, echo=FALSE}
+cor.test(people$height, people$expenses, method = "pearson")
+
+```
+
+Apparently, the test shows that these variables are very likely slightly negatively correlated. The null hypothesis should be rejected.
+
+Next, we will test whether marital status is independent from the type of inhabited building. Again, no special assumptions are required. The null hypothesis is that it is independent, the alternative is that it is not independent.
+
+```{r}
+chisq <- chisq.test(people$married, people$`building type`)
+chisq
+```
+
+The p-value of `r round(chisq$p.value, 2)` does not justify rejecting the null hypothesis.
+
+Now let us take a look at the histogram of people's savings:
+
+```{r, echo=FALSE}
+
+library(ggplot2)
+
+ggplot(people, aes(x=savings)) + geom_histogram(bins=30)
+```
+
+It kind of looks like a Gamma distribution with a few outliers (modulo having to move it right by 800 due to negative values). The parameters are not obvious, but by trial and error, I was able to come up with scale equal to $250$ and shape equal to $5$. Plotting a density function for the data (without the outliers) overlaid with the Gamma distribution looks like this:
+
+```{r, echo=FALSE}
+people_without_outliers = people[people$savings < 2300,]
+
+ggplot(people_without_outliers, aes(x=savings+800)) +
+  geom_density() + stat_function(fun=dgamma, args=list(rate=0.004, shape=5))
+
+
+
+```
+
+Goodness of fit will be tested with the Kolmogorov-Smirnov test. Our null hypothesis is that the sample comes from Gamma distribution with a scale of 250 and shape of 5. The alternative hypothesis is that this is not true. For the Kolmogorov-Smirnov test, it is good to first assess there are no duplicated values in our data:
+
+```{r}
+sum(duplicated(people_without_outliers$savings))
+```
+Conveniently, this is the case, so we may conduct the test:
+
+
+```{r, echo=FALSE}
+
+ks.test (people_without_outliers$savings + 800, "pgamma", shape=5, rate=0.004)
+
+```
+
+We definitely have no grounds to reject $H_0$.
+
+## 6 - linear model
+
+At last, let us construct a linear regression model for savings as explained by the other variables.
+
+```{r, echo=FALSE}
+linear <- lm(savings ~ ., people)
+
+summary(linear)
+```
+
+Now let us diagnose the model.
+
+```{r, echo=FALSE}
+plot(linear, which=1)
+```
+
+This plot shows that the relationship between the explanatory and explained variables is indeed linear, with independent residuals. The only thing that would suggest transforming the data is the presence outliers - observations 121, 296 and 440.
+
+```{r, echo=FALSE}
+plot(linear, which=2)
+```
+
+This plot shows that residues are distributed normally, which is very good. Again, the only exception is the outliers - this time 230, 296 and 440.
+
+
+```{r, echo=FALSE}
+plot(linear, which=3)
+```
+
+The fitted line (red) is quite horizontal, giving us good grounds to assume homoscedasticity of the residues. Outliers same as above.
+
+```{r, echo=FALSE}
+plot(linear, which=5)
+
+```
+
+Again, the same three outliers can be seen, although here they are not explicitly marked so by a dotted red line. That said, based on the information from the other plots, we will remove observations 121, 230, 296 and 440 to improve the performance of the model. The parameters of the new model look like this:
+
+```{r, echo=FALSE}
+people_for_lm = people[-c(121, 230, 296, 440),]
+
+linear <- lm(savings ~ ., people_for_lm)
+
+summary(linear)
+
+```
+
+Now we may compare how important different explanatory variables are for the prediction, in order to remove the least useful ones:
+
+```{r, echo=FALSE}
+
+r2_base = (summary(linear))$r.squared
+rss_base = sum((linear$residuals)^2)
+
+r2_diff_age = (summary(lm(savings ~ . - age, people_for_lm)))$r.squared - r2_base
+rss_diff_age = sum((lm(savings ~ . - age, people_for_lm)$residuals)^2) - rss_base
+
+r2_diff_weight = (summary(lm(savings ~ . - weight, people_for_lm)))$r.squared - r2_base
+rss_diff_weight = sum((lm(savings ~ . - weight, people_for_lm)$residuals)^2) - rss_base
+
+r2_diff_height = (summary(lm(savings ~ . - height, people_for_lm)))$r.squared - r2_base
+rss_diff_height = sum((lm(savings ~ . - height, people_for_lm)$residuals)^2) - rss_base
+
+r2_diff_gender = (summary(lm(savings ~ . - gender, people_for_lm)))$r.squared - r2_base
+rss_diff_gender  = sum((lm(savings ~ . - gender, people_for_lm)$residuals)^2) - rss_base
+
+r2_diff_married = (summary(lm(savings ~ . - married, people_for_lm)))$r.squared - r2_base
+rss_diff_married   = sum((lm(savings ~ . - married, people_for_lm)$residuals)^2) - rss_base
+
+r2_diff_children = (summary(lm(savings ~ . - children, people_for_lm)))$r.squared - r2_base
+rss_diff_children   = sum((lm(savings ~ . - children, people_for_lm)$residuals)^2) - rss_base
+
+r2_diff_expenses = (summary(lm(savings ~ . - expenses, people_for_lm)))$r.squared - r2_base
+rss_diff_expenses = sum((lm(savings ~ . - expenses, people_for_lm)$residuals)^2) - rss_base
+
+pvalues = unname(summary(linear)$coefficients[,4])[c(2, 3, 4, 5, 6, 7, 12)]
+
+r2_diff = c(r2_diff_age, r2_diff_weight, r2_diff_height, r2_diff_gender, r2_diff_married, r2_diff_children, r2_diff_expenses)
+
+rss_diff = c(rss_diff_age, rss_diff_weight, rss_diff_height, rss_diff_gender, rss_diff_married, rss_diff_children, rss_diff_expenses)
+
+comparison_matrix = rbind(pvalues, r2_diff, rss_diff)
+colnames(comparison_matrix) <- c("age", "weight", "height", "gender", "married", "children", "expenses")
+
+t(comparison_matrix)
+
+```
+
+I have ommitted the building-type variable here, partly for convenience, and partly because the p-values indicate it is very relevant. Instead, the p-values suggest removing the gender variable or the married variable, which also both have a relatively small impact on the $R^2$ and $RSS$ statistics. The impact of gender is smaller and less desired - removing it actually decreases RSS, and this is what we will do. The new model looks like this:
+
+```{r, echo=FALSE}
+
+linear_no_gender <- lm(savings ~ . - gender, people_for_lm)
+
+summary(linear_no_gender)
+
+```
+
+And the renewed diagnostic plots:
+
+```{r, echo=FALSE}
+plot(linear_no_gender, which=1)
+
+plot(linear_no_gender, which=2)
+
+plot(linear_no_gender, which=3)
+
+plot(linear_no_gender, which=5)
+
+```
+
+The conclusions that can be drawn from these plots are similar as above.

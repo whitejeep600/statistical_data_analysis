@@ -1,0 +1,240 @@
+---
+title: "Second small project in SDA 2022, am418402"
+author: "Antoni Maciąg"
+date: '2022-05-29'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, echo=FALSE}
+x_train <- read.table('X_train.csv', header = T, sep = ",")
+x_test <- read.table('X_test.csv', header = T, sep = ",")
+y_train <- read.table('Y_train.csv', header = T, sep = ",")
+#sum(sapply(x_train,class) == 'numeric') == dim(x_train)[2] # is TRUE
+#sum(sapply(x_test,class) == 'numeric') == dim(x_test)[2] # is TRUE
+#sum(sapply(y_train,class) == 'numeric') == dim(y_train)[2] # is TRUE
+#which(is.na(x_train), arr.ind=TRUE) # none found
+#which(is.na(x_test), arr.ind=TRUE) # none found
+#which(is.na(y_train), arr.ind=TRUE) # none found
+```
+
+The training data contains `r dim(x_train)[1]` observations of `r dim(x_train)[2]` explanatory variables and the same number of observations of the regressand. The test data contains `r dim(x_test)[1]` observations of the explanatory variables. All the variables are numeric and nothing suggests the need to convert or scale them. The data is complete, meaning there are no unknown or undefined values. Now let us take a look at the histogram of the regressand:
+
+
+```{r, echo=FALSE}
+library(ggplot2)
+hist(y_train[,1], breaks=50)
+
+y_train_no_zeroes <- data.frame(CD36=y_train[y_train$CD36 != 0, ])
+```
+
+It is visible that a large number of observations are equal to zero; in fact, `r dim(y_train)[1] - dim(y_train_no_zeroes)[1]` out of `r dim(y_train)[1]` observations are zero. For this reason, it might be sensible to analyze the statistics of the non-zero observations separately. These statistics look, as follows:
+
+```{r, echo=FALSE}
+summary(y_train_no_zeroes)
+```
+
+and the standard deviation of these observations is equal to `r sd(y_train_no_zeroes[,1])`. We may also take a look at the distribution function fitted to them:
+
+```{r, echo=FALSE}
+ggplot(y_train_no_zeroes, aes(x=CD36)) + geom_density()
+```
+
+The distribution has two visible humps - at about $0.3$ and $2.7$, with corresponding local maxima of about $0.48$ and $0.37$, respectively. It decreases to values very close to zero for arguments close to $4$. We may also take a look at the heatmap of mutual correlation of the 250 genes whose RNA signals correlate the most with the regressand.
+
+```{r, echo=FALSE}
+most_correlated <- x_train[, order(apply(x_train, 2, function(v) {cor(v, y_train)}), decreasing = TRUE) <= 250]
+correlation_matrix <- cor(most_correlated, method = c("spearman"))
+heatmap(correlation_matrix, scale = "none", col=colorRampPalette(c("red", "white", "blue"))(32))
+
+
+```
+
+## ElasticNet
+
+The first model that will be used to predict the values of the regressand is ElasticNet. Given a matrix $X$ of explanatory variables and a vector $Y$ of regressand values, this model consists in finding the matrix $\beta$ minimizing the expression
+$$
+||Y-X\beta||_2^2 + \lambda_1 ||\beta||_1 + \lambda_2 ||\beta||_2^2.
+$$
+or alternatively
+$$
+||Y-X\beta||_2^2 + \lambda(\alpha ||\beta||_1 + \frac{1-\alpha}{2} ||\beta||_2^2).
+$$
+where $\lambda_1, \lambda_2$ are hyperparameters (tuning parameters). The special case in which they are both $0$ corresponds to the linear regression model. The case when $\lambda_1=0$ but $\lambda_2 \neq 0$ corresponds to ridge regression, and the opposite case - to the lasso method. The main advantages of ElasticNet as compares to simple linear regression are: reduced variance in exchange for a moderately worse bias, reduced number of predictors used, and consequently improved model readability and efficiency.
+
+Using the grid search method and $k$-fold cross-validation, optimal parameters $\alpha$, $\lambda$ will be chosen from a grid of hypothesized values. Preliminary testing has shown that in this case, combinations of $\alpha$ close to $0$ and $\lambda$ close to $2$ work well, so the grid will contain  values close to these. The $k$ for $k$-fold cross validation will be set to the standard value of $10$, giving reliable results with reasonable computation time (our dataset is neither particularly large nor small). The table of validation mean square errors for the tried out values of alpha and lambda are, as follows (with rows corresponding to alpha values, and columns - to lambda values):
+ 
+```{r, echo=FALSE, results='hide', error=FALSE, warning=FALSE, message=FALSE}
+library(glmnet)
+train_data <- cbind(x_train, y_train)
+
+k <- 10
+division <- cut(1:nrow(x_train), k, labels = F)
+division <- sample(division)
+
+alphas <- c(0, 0.05, 0.1, 1) 
+lambdas <-  c(1, 1.5, 2.5, 4)
+
+validation_errors <- matrix(0, length(alphas), length(lambdas))
+
+for(alpha_no in 1:length(alphas)) {
+  for(lambda_no in 1:length(lambdas)){
+    kfold_errors <- numeric(k)
+    for (i in 1:k) {
+      train_subset <- which(division != i)
+      model <- glmnet(x_train[train_subset,],
+                      y_train[train_subset,],
+                      alpha=alphas[alpha_no],
+                      lambda=lambdas[lambda_no])
+     
+     
+      prediction <- predict(model, as.matrix(x_train))  
+      test_prediction <- prediction[-train_subset]
+      kfold_errors[i] <- mean((test_prediction - y_train[-train_subset,])^2)
+    }
+    validation_errors[alpha_no, lambda_no] <- mean(kfold_errors)
+  }
+}
+
+optimal_alpha_no <- which(validation_errors == min(validation_errors), arr.ind = TRUE)[1, 1]
+optimal_lambda_no <- which(validation_errors == min(validation_errors), arr.ind = TRUE)[1, 2]
+optimal_alpha <- alphas[optimal_alpha_no]
+optimal_lambda <- lambdas[optimal_lambda_no]
+colnames(validation_errors) <- lambdas
+rownames(validation_errors) <- alphas
+```
+
+```{r, echo=FALSE}
+validation_errors
+
+final_elastic_net_model <- glmnet(as.matrix(x_train),
+                      as.vector(y_train[,1]),
+                      alpha=optimal_alpha,
+                      lambda=optimal_lambda)
+final_elastic_net_prediction <- predict(final_elastic_net_model, as.matrix(x_train))
+elastic_test_error <- mean((final_elastic_net_prediction - y_train[,1])^2)
+
+```
+
+As we can see, the minimal validation error equal to `r validation_errors[optimal_alpha_no, optimal_lambda_no]` is achieved for $\alpha=$ `r optimal_alpha`, $\lambda=$ `r optimal_lambda`. The test error (mean square difference between the model's predictions and actual train values of the regressand) for these values is `r elastic_test_error`.
+
+## Random Forest
+
+The next model that will be trained for prediction is the Random Forest model, which is a method of applying bootstrap to decision trees. A number of decision trees is constructed, and for each node, the predictor defining the split in that node is chosen not out of all predictors, but out of a randomly selected subset of candidates. This model has a range of parameters, out of which we will conduct grid search with cross-validation for the following ones:
+
+mtry -the number of predictors selected as candidates for each split,
+ntree - the number of treees constructed,
+maxnodes - maximum number of leaves per tree.
+
+```{r, echo=FALSE, results='hide', error=FALSE, warning=FALSE, message=FALSE}
+library(randomForest)
+p <- dim(x_train)[2]
+mtrys <- c(sqrt(p), 2*sqrt(p))
+ntrees <- c(40, 60)
+maxnodes <- c(20, 30)
+
+validation_errors <- array(0, dim=c(length(mtrys), length(ntrees), length(maxnodes)))
+
+for(mtrys_no in 1:length(mtrys)) {
+  for(ntrees_no in 1:length(ntrees)){
+    for(maxnodes_no in 1:length(maxnodes)){
+      kfold_errors <- numeric(k)
+      for (i in 1:k) {
+        train_subset <- which(division != i)
+        model <- randomForest(x_train[train_subset,],
+                              y_train[train_subset,],
+                              mtry=mtrys[mtrys_no],
+                              maxnodes=maxnodes[maxnodes_no],
+                              ntree=ntrees[ntrees_no])
+     
+     
+        prediction <- predict(model, as.matrix(x_train))  
+        test_prediction <- prediction[-train_subset]
+        kfold_errors[i] <- mean((test_prediction - y_train[-train_subset,])^2)
+      }
+      validation_errors[mtrys_no, ntrees_no, maxnodes_no] <- mean(kfold_errors)
+    }
+  }
+}
+optimal_mtry_no <- which(validation_errors == min(validation_errors), arr.ind = TRUE)[1]
+optimal_ntrees_no <- which(validation_errors == min(validation_errors), arr.ind = TRUE)[2]
+optimal_maxnodes_no <- which(validation_errors == min(validation_errors), arr.ind = TRUE)[3]
+
+optimal_mtry = mtrys[optimal_mtry_no]
+optimal_ntree = ntrees[optimal_ntrees_no]
+optimal_maxnodes = maxnodes[optimal_maxnodes_no]
+
+validation_errors_mtry_1 = validation_errors[1, ,]
+validation_errors_mtry_2 = validation_errors[2, ,]
+
+colnames(validation_errors_mtry_1) <- ntrees
+rownames(validation_errors_mtry_1) <- maxnodes
+
+colnames(validation_errors_mtry_2) <- ntrees
+rownames(validation_errors_mtry_2) <- maxnodes
+
+final_forest_model <- randomForest(x_train[train_subset,],
+                            y_train[train_subset,],
+                            mtry=optimal_mtry,
+                            maxnodes=optimal_maxnodes,
+                            ntree=optimal_ntree)
+
+final_forest_prediction <- predict(final_forest_model, as.matrix(x_train))
+forest_test_error <- mean((final_forest_prediction - y_train[,1])^2)
+
+```
+
+The table of validation mean square errors for $\texttt{mtry}=$ `r mtrys[1]` and the tried out values of ntree and maxnodes are, as follows (with rows corresponding to ntree values, and columns - to maxnodes values):
+
+```{r, echo=FALSE}
+validation_errors_mtry_1
+```
+
+For $\texttt{mtry}=$ `r mtrys[2]`, on the other hand:
+
+```{r, echo=FALSE}
+validation_errors_mtry_2
+```
+
+The minimal test error (`r validation_errors[optimal_mtry_no, optimal_ntrees_no, optimal_maxnodes_no]`) is obtained for the values: $\texttt{mtry}=$ `r optimal_mtry`, $\texttt{ntree}=$ `r optimal_ntree`, $\texttt{maxnodes}=$  `r optimal_maxnodes` The test error for these values is `r forest_test_error`.
+
+## Comparison
+
+We can now compare the obtained models against a baseline model, whose prediction, regardless of the predictor values, is the mean of train regressand values. We will compare the MSE, the sample variance of prediction errors, and R-squared scores. comparison looks, as follows:
+
+```{r, echo=FALSE}
+
+baseline_prediction <- rep(mean(y_train[,1]), length(y_train[,1]))
+baseline_error <- mean((baseline_prediction - y_train[,1])^2)
+
+elastic_rsq <- 1 -
+  sum((y_train[,1]-final_elastic_net_prediction)^2)/sum((y_train[,1]-mean(y_train[,1]))^2)
+forest_rsq <- 1 -
+  sum((y_train[,1]-final_forest_prediction)^2)/sum((y_train[,1]-mean(y_train[,1]))^2)
+
+comparison <- c(elastic_test_error,
+                forest_test_error,
+                baseline_error,
+                var(final_elastic_net_prediction),
+                var(final_forest_prediction),
+                0,
+                elastic_rsq,
+                forest_rsq,
+                0)
+
+
+comparison <- matrix(comparison, 3, 3, byrow=TRUE)
+colnames(comparison) <- c("elastic", "forest", "baseline")
+rownames(comparison) <- c("MSE", "Error variance", "R-squared")
+
+comparison
+```
+
+Both MSE and R-squared suggest that the ElasticNet model performs better than the random forest model. However, they both achieve much better scores than the baseline. Error variance is lower for the random forest, which means the distribution of its predictions is less sparse, but this is not necessarily either a good or bad thing.
+
+## Prediction
+
+The final model trained is a simple linear regression model supported with PCA with variable scaling and centering. The details can be seen in the am418402_kod2.R file. As a universal technique for supporting machine learning, I first ran PCA on the train data. In the script, I left a parameter $\gamma$ allowing to choose how many principal components should be selected for further analysis by way of choosing the desired percentage of data variance that should be explained by those components. Out of the regression models discussed on the lab, I chose to test linear regression and ElasticNet with parameter fine-tuning by automatic cross-validation provided by the $\texttt{caret}$ library. By trial and error, it turned out that linear regression achieved better scores than ElasticNet, and that the $\gamma$ parameter should be very close to $1$.
